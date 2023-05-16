@@ -606,7 +606,7 @@ void Disassembler::Dump_Decryption(uintptr_t decryption_end, ZydisRegister enc_r
 	Print_Decryption(instruction_trace, enc_reg, print_indexing);
 }
 
-void Disassembler::Dump_Switch()
+uintptr_t Disassembler::Dump_Switch()
 {
 	ZydisDecodedInstruction encrypted_read_instruction = Decode(current_rip);
 
@@ -640,6 +640,7 @@ void Disassembler::Dump_Switch()
 		printf("\t\treturn %s;\n\t}\n", Get64BitRegisterString(encrypted_read_instruction.operands[0].reg.value).c_str());
 	}
 	printf("\t}\n}\n");
+	return decryption_end;
 }
 
 void Disassembler::PrintRegisters()
@@ -669,8 +670,8 @@ void Disassembler::Dump_ClientInfo_MW(uintptr_t address)
 	printf("\tif(!%s)\n\t\treturn %s;\n", Get64BitRegisterString(encrypted_read_instruction.operands[0].reg.value).c_str(), Get64BitRegisterString(encrypted_read_instruction.operands[0].reg.value).c_str());
 
 	if (!Print_PEB()) {
-		printf("\t//Failed to find peb. exiting\n}\n");
-		return;
+		printf("\t//Failed to find peb. (mayabe not needed)\n");
+		//return;
 	}
 	RunUntilInstruction(ZydisMnemonic::ZYDIS_MNEMONIC_JZ);
 	ZydisDecodedInstruction jmp_to_end = Decode(current_rip);
@@ -730,7 +731,7 @@ void Disassembler::Dump_ClientBase(uintptr_t address)
 	printf("\t%s;\n", std::regex_replace(enc_client_info, std::regex(Get64BitRegisterString(encrypted_read_instruction.operands[1].mem.base)), "client_info").c_str());
 	printf("\tif(!%s)\n\t\treturn %s;\n", Get64BitRegisterString(encrypted_read_instruction.operands[0].reg.value).c_str(), Get64BitRegisterString(encrypted_read_instruction.operands[0].reg.value).c_str());
 
-	Dump_Switch();
+	client_base_end = Dump_Switch();
 	ignore_trace.clear();
 }
 
@@ -753,7 +754,7 @@ void Disassembler::Dump_BoneBase(uintptr_t address)
 	printf("\t%s;\n", AsmToCPP(encrypted_read_instruction, current_rip).c_str());
 	printf("\tif(!%s)\n\t\treturn %s;\n", Get64BitRegisterString(encrypted_read_instruction.operands[0].reg.value).c_str(), Get64BitRegisterString(encrypted_read_instruction.operands[0].reg.value).c_str());
 
-	Dump_Switch();
+	bone_base_end = Dump_Switch();
 	ignore_trace.clear();
 }
 
@@ -788,201 +789,229 @@ void Disassembler::Dump_BoneIndex(uintptr_t address)
 		debugger->exception_hit = false;
 	}
 	Dump_Decryption(0, return_register, "\t", ZydisMnemonic::ZYDIS_MNEMONIC_TEST);
-	printf("\treturn %s;\n}", Get64BitRegisterString(return_register).c_str());
+	printf("\treturn %s;\n}\n", Get64BitRegisterString(return_register).c_str());
 	ignore_trace.clear();
 }
 void Disassembler::Dump_Offsets_MW()
 {
-	printf("namespace offsets {\n");
+	{
+		IMAGE_DOS_HEADER dos_header = debugger->read<IMAGE_DOS_HEADER>(debugger->base_address);
+		IMAGE_NT_HEADERS64 nt_headers = debugger->read<IMAGE_NT_HEADERS64>(debugger->base_address + dos_header.e_lfanew);
+		printf("constexpr auto timestamp = 0x%X;\n", nt_headers.FileHeader.TimeDateStamp);
+	}
 	{
 		uintptr_t addr = debugger->scanner->Find_Pattern("33 05 ? ? ? ? 89 44 24 34 48 8B 44 24");
 		auto instruction = Decode(addr);
 		if (instruction.operands[1].mem.base == ZYDIS_REGISTER_RIP && instruction.operands[1].mem.disp.has_displacement)
-			printf("\tconstexpr auto ref_def_ptr = 0x%llX;\n", (addr + instruction.operands[1].mem.disp.value + instruction.length) - debugger->base_address - 0x4);
+			printf("constexpr auto ref_def_ptr = 0x%llX;\n", (addr + instruction.operands[1].mem.disp.value + instruction.length) - debugger->base_address - 0x4);
 		else
-			printf("\t\033[1;31mconstexpr auto refdef = 0x0;\033[0m\n");
+			printf("\033[1;31mconstexpr auto refdef = 0x0;\033[0m\n");
 	}
 
 	{
 		uintptr_t addr = debugger->scanner->Find_Pattern("48 8D 0D ? ? ? ? 48 8B 0C D1 8B D3 48 8B 01 FF 90 ? ? ? ? ");
 		auto instruction = Decode(addr);
 		if (instruction.operands[1].mem.base == ZYDIS_REGISTER_RIP && instruction.operands[1].mem.disp.has_displacement)
-			printf("\tconstexpr auto name_array = 0x%llX;\n", (addr + instruction.operands[1].mem.disp.value + instruction.length) - debugger->base_address);
+			printf("constexpr auto name_array = 0x%llX;\n", (addr + instruction.operands[1].mem.disp.value + instruction.length) - debugger->base_address);
 		else
-			printf("\t\033[1;31mconstexpr auto name_array = 0x0;\033[0m\n");
-		printf("\tconstexpr auto name_array_pos = 0x4C70;\n");
+			printf("\033[1;31mconstexpr auto name_array = 0x0;\033[0m\n");
+		printf("constexpr auto name_array_pos = 0x5E70; // 0x4C70 for MW1(2019)\n");
+		printf("constexpr auto name_array_size = 0xD8;\n");
 	}
 
 	{
-		uintptr_t addr = debugger->scanner->Find_Pattern("48 8D 05 ? ? ? ? 48 03 F8 80 BF ? ? ? ? ? 75 18 48 8B 07");
+		uintptr_t addr = debugger->scanner->Find_Pattern("48 8D 05 ? ? ? ? 48 03 F8 80 BF");
 		auto instruction = Decode(addr);
 		if (instruction.operands[1].mem.base == ZYDIS_REGISTER_RIP && instruction.operands[1].mem.disp.has_displacement)
-			printf("\tconstexpr auto loot_ptr = 0x%llX;\n", (addr + instruction.operands[1].mem.disp.value + instruction.length) - debugger->base_address - 0x4);
+			printf("constexpr auto loot_ptr = 0x%llX;\n", (addr + instruction.operands[1].mem.disp.value + instruction.length) - debugger->base_address - 0x4);
 		else
-			printf("\t\033[1;31mconstexpr auto loot = 0x0;\033[0m\n");
+			printf("\033[1;31mconstexpr auto loot = 0x0;\033[0m\n");
 	}
 
 	{
 		uintptr_t addr = debugger->scanner->Find_Pattern("48 8B 05 ? ? ? ? 48 8B 7C 24 ? 48 05 ? ? ? ? 48 69 CA ? ? ? ? 48 03 C1 C3");
 		auto instruction = Decode(addr);
 		if (instruction.operands[1].mem.base == ZYDIS_REGISTER_RIP && instruction.operands[1].mem.disp.has_displacement)
-			printf("\tconstexpr auto camera_base = 0x%llX;\n", (addr + instruction.operands[1].mem.disp.value + instruction.length) - debugger->base_address);
+			printf("constexpr auto camera_base = 0x%llX;\n", (addr + instruction.operands[1].mem.disp.value + instruction.length) - debugger->base_address);
 		else
-			printf("\t\033[1;31mconstexpr auto camera_base = 0x0;\033[0m\n");
-		printf("\tconstexpr auto camera_pos = 0x1D8;\n");
+			printf("\033[1;31mconstexpr auto camera_base = 0x0;\033[0m\n");
+		printf("constexpr auto camera_pos = 0x1F8;\n");
 	}
 
 	{
 		uintptr_t addr = debugger->scanner->Find_Pattern("48 8B 83 ? ? ? ? 4C 8D 45 ? 48 8D 4C 24 ? 8B 50 0C", true);
 		auto instruction = Decode(addr);
 		if (instruction.operands[1].mem.base == ZYDIS_REGISTER_RBX && instruction.operands[1].mem.disp.has_displacement)
-			printf("\tconstexpr auto local_index = 0x%llX;\n", instruction.operands[1].mem.disp.value);
+			printf("constexpr auto local_index = 0x%llX;\n", instruction.operands[1].mem.disp.value);
 		else
-			printf("\t\033[1;31mconstexpr auto local_index = 0x0;\033[0m\n");
-		printf("\tconstexpr auto local_index_pos = 0x2CC; // 0x1FC for MW1 (2019)\n");
+			printf("\033[1;31mconstexpr auto local_index = 0x0;\033[0m\n");
+		printf("constexpr auto local_index_pos = 0x2D0; // 0x1FC for MW1 (2019)\n");
 	}
 
 	{
 		uintptr_t addr = debugger->scanner->Find_Pattern("41 8B 52 0C 4D 8D 4A 04 4D 8D 42 08 4C 89 95 ? ? ? ? 8B C2 4C 89 8D") - 0x9;//DEAD
 		auto instruction = Decode(addr);
 		if (instruction.operands[1].mem.base == ZYDIS_REGISTER_RSI && instruction.operands[1].mem.disp.has_displacement)
-			printf("\tconstexpr auto recoil = 0x%llX;\n", instruction.operands[1].mem.disp.value);
+			printf("constexpr auto recoil = 0x%llX;\n", instruction.operands[1].mem.disp.value);
 		else
-			printf("\t\033[1;31mconstexpr auto recoil = 0x0;\033[0m\n");
+			printf("\033[1;31mconstexpr auto recoil = 0x0;\033[0m\n");
 	}
 
 	{
-		uintptr_t addr = debugger->scanner->Find_Pattern("3B 1D ? ? ? ? 89 5D 88 89 9D ? ? ? ? 0F 8D ? ? ? ? 48 8B 3D"); //3B 1D ? ? ? ? 8B E8 74 17 41 B8 ? ? ? ?
+		uintptr_t addr = debugger->scanner->Find_Pattern("3B 0D ?? ?? ?? ?? 0F 47 0D ?? ?? ?? ?? 41 89 4D 24"); //3B 1D ? ? ? ? 89 5D 88 89 9D ? ? ? ? 0F 8D ? ? ? ? 48 8B 3D
 		auto instruction = Decode(addr);
-		if (instruction.operands[0].reg.value == ZYDIS_REGISTER_EBX &&instruction.operands[1].mem.base == ZYDIS_REGISTER_RIP && instruction.operands[1].mem.disp.has_displacement)
-			printf("\tconstexpr auto game_mode = 0x%llX;\n", (addr + instruction.operands[1].mem.disp.value + instruction.length) - debugger->base_address);
+		if (instruction.operands[0].reg.value == ZYDIS_REGISTER_ECX && instruction.operands[1].mem.base == ZYDIS_REGISTER_RIP && instruction.operands[1].mem.disp.has_displacement)
+			printf("constexpr auto game_mode = 0x%llX;\n", (addr + instruction.operands[1].mem.disp.value + instruction.length) - debugger->base_address);
 		else
-			printf("\t\033[1;31mconstexpr auto game_mode = 0x0;\033[0m\n");
+			printf("\033[1;31mconstexpr auto game_mode = 0x0;\033[0m\n");
 	}
 
 	{
 		uintptr_t addr = debugger->scanner->Find_Pattern("48 8D 1D ?? ?? ?? ?? B2 01 8B 00 0F B7 C8 48 8B 1C CB");
 		auto instruction = Decode(addr);
-		if (instruction.operands[0].reg.value == ZYDIS_REGISTER_RBX &&instruction.operands[1].mem.base == ZYDIS_REGISTER_RIP && instruction.operands[1].mem.disp.has_displacement)
-			printf("\tconstexpr auto weapon_definitions = 0x%llX;\n", (addr + instruction.operands[1].mem.disp.value + instruction.length) - debugger->base_address);
+		if (instruction.operands[0].reg.value == ZYDIS_REGISTER_RBX && instruction.operands[1].mem.base == ZYDIS_REGISTER_RIP && instruction.operands[1].mem.disp.has_displacement)
+			printf("constexpr auto weapon_definitions = 0x%llX;\n", (addr + instruction.operands[1].mem.disp.value + instruction.length) - debugger->base_address);
 		else
-			printf("\t\033[1;31mconstexpr auto weapon_definitions = 0x0;\033[0m\n");
+			printf("\033[1;31mconstexpr auto weapon_definitions = 0x0;\033[0m\n");
 	}
 
 	{
 		uintptr_t addr = debugger->scanner->Find_Pattern("48 8B 1D ?? ?? ?? ?? BA FF FF FF FF 48 8B CF E8");
 		auto instruction = Decode(addr);
 		if (instruction.operands[0].reg.value == ZYDIS_REGISTER_RBX && instruction.operands[1].mem.base == ZYDIS_REGISTER_RIP && instruction.operands[1].mem.disp.has_displacement)
-			printf("\tconstexpr auto distribute = 0x%llX;\n", (addr + instruction.operands[1].mem.disp.value + instruction.length) - debugger->base_address);
+			printf("constexpr auto distribute = 0x%llX;\n", (addr + instruction.operands[1].mem.disp.value + instruction.length) - debugger->base_address);
 		else
-			printf("\t\033[1;31mconstexpr auto distribute = 0x0;\033[0m\n");
+			printf("\033[1;31mconstexpr auto distribute = 0x0;\033[0m\n");
 	}
 
 	{
 		uintptr_t addr = debugger->scanner->Find_Pattern("80 BF ? ? ? ? ? 74 17 3B 87");
 		auto instruction = Decode(addr);
 		if (instruction.operands[0].mem.base == ZYDIS_REGISTER_RDI && instruction.operands[0].mem.disp.has_displacement)
-			printf("\tconstexpr auto visible_offset = 0x%llX;\n", instruction.operands[0].mem.disp.value);
+			printf("constexpr auto visible_offset = 0x%llX;\n", instruction.operands[0].mem.disp.value);
 		else
-			printf("\t\033[1;31mconstexpr auto visible_offset = 0x0;\033[0m\n");
+			printf("\033[1;31mconstexpr auto visible_offset = 0x0;\033[0m\n");
 	}
 
 	{
 		uintptr_t addr = debugger->scanner->Find_Pattern("48 8D 05 ? ? ? ? 49 8B CE 48 89 47 38 C5 FA 11 87");
 		auto instruction = Decode(addr);
 		if (instruction.operands[1].mem.base == ZYDIS_REGISTER_RIP && instruction.operands[1].mem.disp.has_displacement)
-			printf("\tconstexpr auto visible = 0x%llX;\n", (addr + instruction.operands[1].mem.disp.value + instruction.length) - debugger->base_address);
+			printf("constexpr auto visible = 0x%llX;\n", (addr + instruction.operands[1].mem.disp.value + instruction.length) - debugger->base_address);
 		else
-			printf("\t\033[1;31mconstexpr auto visible = 0x0;\033[0m\n");
+			printf("\033[1;31mconstexpr auto visible = 0x0;\033[0m\n");
 	}
 
-	printf("\tnamespace player {\n");
+	printf("\n");
+
+	printf("namespace bone {\n");
 	{
 		{
-			uintptr_t addr = debugger->scanner->Find_Pattern("48 69 D3 ?? ?? ?? ?? 48 03 96");
+			uintptr_t addr = debugger->scanner->Find_Pattern("C4 C1 7A 58 88 ? ? ? ? C5 FA 11 8A ? ? ? ? C5 FA 10 51 ? C4 C1 6A 58 80 ? ? ? ? C5 FA 11 82 ? ? ? ? C5 FA 10 49 ? C4 C1 72 58 90");
 			auto instruction = Decode(addr);
-			if (instruction.operands[2].type == ZydisOperandType::ZYDIS_OPERAND_TYPE_IMMEDIATE)
-				printf("\t\tconstexpr auto size = 0x%llX;\n", instruction.operands[2].imm.value);
+			if (instruction.operands[2].mem.base == ZYDIS_REGISTER_RDX && instruction.operands[2].mem.disp.has_displacement)
+				printf("\tconstexpr auto bone_base = 0x%llX;\n", instruction.operands[2].mem.disp.value);
 			else
-				printf("\t\t\033[1;31mconstexpr auto size = 0x0;\033[0m\n");
+				printf("\t\033[1;31mconstexpr auto bone_base = 0x0;\033[0m\n");
+
+		}
+		{
+			auto instruction = Decode(bone_base_end);
+			uintptr_t mult_start = bone_base_end + instruction.length;
+			instruction = Decode(mult_start);
+			if(instruction.mnemonic == ZYDIS_MNEMONIC_IMUL)
+				printf("\tconstexpr auto size = 0x%llX;\n", instruction.operands[2].imm.value);
+			else {
+				current_rip = mult_start;
+				SkipUntilInstruction(ZYDIS_MNEMONIC_ADD);
+				auto end_instruction = Decode(current_rip);
+				uintptr_t mult_end = current_rip + end_instruction.length;
+				GoToAddress(mult_start);
+				Dump_Decryption(mult_end, end_instruction.operands[0].reg.value, "\t");
+			}
+		}
+		printf("\tconstexpr auto offset = 0xD8; //0xC0 for MW1(2019).\n");
+	}
+	printf("};\n");
+
+	printf("\n");
+
+	printf("namespace player {\n");
+	{
+		{
+			auto instruction = Decode(client_base_end);
+			uintptr_t mult_start = client_base_end + instruction.length;
+			instruction = Decode(mult_start);
+			if (instruction.mnemonic == ZYDIS_MNEMONIC_IMUL)
+				printf("\tconstexpr auto size = 0x%llX;\n", instruction.operands[2].imm.value);
+			else {
+				current_rip = mult_start;
+				SkipUntilInstruction(ZYDIS_MNEMONIC_ADD);
+				auto end_instruction = Decode(current_rip);
+				uintptr_t mult_end = current_rip + end_instruction.length;
+				GoToAddress(mult_start);
+				Dump_Decryption(mult_end, end_instruction.operands[0].reg.value, "\t");
+			}
 		}
 
 		{
-			uintptr_t addr = debugger->scanner->Find_Pattern("C7 87 ? ? ? ? ? ? ? ? C7 87 ? ? ? ? ? ? ? ? 41 89 9E ? ? ? ? 41 89 9E ? ? ? ? 41 C7 86 ? ? ? ? ? ? ? ? 41 89 B6 ? ? ? ? 41 C7 86 ? ? ? ? ? ? ? ? 41 C7 86 ? ? ? ? ? ? ? ? 41 C7 86");
+			uintptr_t addr = debugger->scanner->Find_Pattern("7D ? 41 38 ? ? ? ? ? 74") + 2;
 			auto instruction = Decode(addr);
-			if (instruction.operands[0].mem.base == ZYDIS_REGISTER_RDI && instruction.operands[0].mem.disp.has_displacement)
-				printf("\t\tconstexpr auto valid = 0x%llX;\n", instruction.operands[0].mem.disp.value);
+			if (instruction.operands[0].type == ZYDIS_OPERAND_TYPE_MEMORY && instruction.operands[0].mem.disp.has_displacement)
+				printf("\tconstexpr auto valid = 0x%llX;\n", instruction.operands[0].mem.disp.value);
 			else
-				printf("\t\t\033[1;31mconstexpr auto valid = 0x0;\033[0m\n");
+				printf("\t\033[1;31mconstexpr auto valid = 0x0;\033[0m\n");
 		}
 
 		{
 			uintptr_t addr = debugger->scanner->Find_Pattern("48 8B 8B ? ? ? ? 48 39 01 74 2F 33 D2 C6 83 ? ? ? ? ? C6 83 ? ? ? ? ? E8");
 			auto instruction = Decode(addr);
 			if (instruction.operands[1].mem.base == ZYDIS_REGISTER_RBX && instruction.operands[1].mem.disp.has_displacement)
-				printf("\t\tconstexpr auto pos = 0x%llX;\n", instruction.operands[1].mem.disp.value);
+				printf("\tconstexpr auto pos = 0x%llX;\n", instruction.operands[1].mem.disp.value);
 			else
-				printf("\t\t\033[1;31mconstexpr auto pos = 0x0;\033[0m\n");
+				printf("\t\033[1;31mconstexpr auto pos = 0x0;\033[0m\n");
 		}
 
 		{
 			uintptr_t addr = debugger->scanner->Find_Pattern("3A 88 ? ? ? ? 0F 84 ? ? ? ? 80 3D");
 			auto instruction = Decode(addr);
 			if (instruction.operands[1].mem.base == ZYDIS_REGISTER_RAX && instruction.operands[1].mem.disp.has_displacement)
-				printf("\t\tconstexpr auto team = 0x%llX;\n", instruction.operands[1].mem.disp.value);
+				printf("\tconstexpr auto team = 0x%llX;\n", instruction.operands[1].mem.disp.value);
 			else
-				printf("\t\t\033[1;31mconstexpr auto team = 0x0;\033[0m\n");
+				printf("\t\033[1;31mconstexpr auto team = 0x0;\033[0m\n");
 		}
 
 		{
-			uintptr_t addr = debugger->scanner->Find_Pattern("0F 48 F0 83 BF ? ? ? ? ? 75 0A F3 0F 10 35 ? ? ? ? EB 08");
-			auto instruction = Decode(addr);
-			instruction = Decode(addr + instruction.length);
-			if (instruction.operands[0].mem.base == ZYDIS_REGISTER_RDI && instruction.operands[0].mem.disp.has_displacement)
-				printf("\t\tconstexpr auto stance = 0x%llX;\n", instruction.operands[0].mem.disp.value);
-			else
-				printf("\t\t\033[1;31mconstexpr auto stance = 0x0;\033[0m\n");
-		}
-
-		{
-			uintptr_t addr = debugger->scanner->Find_Pattern("49 8D A8 ? ? ? ? 44 0F B7 F2 48 8B D9 33 D2 48 8B CD 49 8B F9 4D 8B F8 E8");//DEAD
+			uintptr_t addr = debugger->scanner->Find_Pattern("FF 07 E8 ? ? ? ? 8B 8E");
 			auto instruction = Decode(addr);
 			if (instruction.operands[1].mem.base == ZYDIS_REGISTER_R8 && instruction.operands[1].mem.disp.has_displacement)
-				printf("\t\tconstexpr auto weapon_index = 0x%llX;\n", instruction.operands[1].mem.disp.value);
+				printf("\tconstexpr auto stance = 0x%llX;\n", instruction.operands[1].mem.disp.value);
 			else
-				printf("\t\t\033[1;31mconstexpr auto weapon_index = 0x0;\033[0m\n");
+				printf("\t\033[1;31mconstexpr auto stance = 0x0;\033[0m\n");
+		}
+
+		{
+			uintptr_t addr = debugger->scanner->Find_Pattern("4C 8D 85 ? ? ? ? 48 8B F8 4C 8B 08 41 FF 51 08");//DEAD
+			auto instruction = Decode(addr);
+			if (instruction.operands[1].mem.base == ZYDIS_REGISTER_RBP && instruction.operands[1].mem.disp.has_displacement)
+				printf("\tconstexpr auto weapon_index = 0x%llX;\n", instruction.operands[1].mem.disp.value);
+			else
+				printf("\t\033[1;31mconstexpr auto weapon_index = 0x0;\033[0m\n");
 		}
 
 		{
 			uintptr_t addr = debugger->scanner->Find_Pattern("33 D2 C6 83 ? ? ? ? ? C6 83 ? ? ? ? ? E8 ? ? ? ? 44 0F B6 C6 48 8B D5 48 8B CF E8") + 2;
 			auto instruction = Decode(addr);
 			if (instruction.operands[0].mem.base == ZYDIS_REGISTER_RBX && instruction.operands[0].mem.disp.has_displacement)
-				printf("\t\tconstexpr auto dead_1 = 0x%llX;\n", instruction.operands[0].mem.disp.value);
+				printf("\tconstexpr auto dead_1 = 0x%llX;\n", instruction.operands[0].mem.disp.value);
 			else
-				printf("\t\t\033[1;31mconstexpr auto dead_1 = 0x0;\033[0m\n");
+				printf("\t\033[1;31mconstexpr auto dead_1 = 0x0;\033[0m\n");
 			instruction = Decode(addr + instruction.length);
 			if (instruction.operands[0].mem.base == ZYDIS_REGISTER_RBX && instruction.operands[0].mem.disp.has_displacement)
-				printf("\t\tconstexpr auto dead_2 = 0x%llX;\n", instruction.operands[0].mem.disp.value);
+				printf("\tconstexpr auto dead_2 = 0x%llX;\n", instruction.operands[0].mem.disp.value);
 			else
-				printf("\t\t\033[1;31mconstexpr auto dead_2 = 0x0;\033[0m\n");
+				printf("\t\033[1;31mconstexpr auto dead_2 = 0x0;\033[0m\n");
 		}
 	}
-	printf("\t}\n");
-
-	printf("\tnamespace bone {\n");
-	{
-		{
-			uintptr_t addr = debugger->scanner->Find_Pattern("C4 C1 7A 58 88 ? ? ? ? C5 FA 11 8A ? ? ? ? C5 FA 10 51 ? C4 C1 6A 58 80 ? ? ? ? C5 FA 11 82 ? ? ? ? C5 FA 10 49 ? C4 C1 72 58 90");
-			auto instruction = Decode(addr);
-			if (instruction.operands[2].mem.base == ZYDIS_REGISTER_R8 && instruction.operands[2].mem.disp.has_displacement)
-				printf("\t\tconstexpr auto bone_base = 0x%llX;\n", instruction.operands[2].mem.disp.value);
-			else
-				printf("\t\t\033[1;31mconstexpr auto bone_base = 0x0;\033[0m\n");
-			printf("\t\tconstexpr auto size = 0x180; //0x150 for MW1(2019).\n");
-			printf("\t\tconstexpr auto offset = 0xD8; //0xC0 for MW1(2019).\n");
-		}
-	}
-	printf("\t}\n");
-
-	printf("}\n");
+	printf("};\n");
 }
